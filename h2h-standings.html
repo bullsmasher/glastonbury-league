@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>League standings – head-to-head tiebreaker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Source+Sans+3:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  color-scheme: light;
+  --turf:#1E4A37; --turf-ink:#F3F6F1; --chalk:#FBFCFA; --line:#D9DFD8;
+  --ink:#1A211D; --ink-2:#56625A; --up:#1F7A4C; --down:#B23A2E; --tied:#E8EEE6;
+  --amber:#C98A1B;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root{ color-scheme:dark; --turf:#163A2B; --turf-ink:#E6EDE7; --chalk:#121815; --line:#2A3530;
+    --ink:#E4EAE5; --ink-2:#9AA89F; --up:#5BC48A; --down:#F0786B; --tied:#1C2621; --amber:#E2A73C; }
+}
+*,*::before,*::after{box-sizing:inherit}
+body{margin:0;background:var(--chalk);color:var(--ink);font:16px/1.5 "Source Sans 3",system-ui,-apple-system,"Segoe UI",sans-serif}
+header{background:var(--turf);color:var(--turf-ink);padding:28px 20px 22px}
+.wrap{max-width:760px;margin:0 auto}
+h1{font:700 clamp(2rem,6vw,3rem)/1 "Barlow Condensed","Arial Narrow",sans-serif;margin:0 0 6px;letter-spacing:.01em}
+.sub{margin:0;opacity:.85;font-size:15px}
+.bar{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:14px 20px;border-bottom:1px solid var(--line)}
+.bar small{color:var(--ink-2)}
+button{font:600 15px "Source Sans 3",sans-serif;background:transparent;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:7px 14px;cursor:pointer}
+button:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+main{padding:8px 20px 40px}
+.scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th{font:600 13px "Source Sans 3",sans-serif;color:var(--ink-2);text-align:left;padding:10px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:11px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+td.rank{font:700 22px/1 "Barlow Condensed",sans-serif;width:36px}
+td.num,th.num{text-align:right;white-space:nowrap}
+tr.tied td{background:var(--tied)}
+.team{font-weight:600}
+.owner{display:block;color:var(--ink-2);font-size:13px;font-weight:400}
+.note{display:block;color:var(--ink-2);font-size:13px;margin-top:2px}
+.mv{font:600 15px "Barlow Condensed",sans-serif;white-space:nowrap}
+.mv.up{color:var(--up)} .mv.down{color:var(--down)} .mv.same{color:var(--ink-2)}
+.explain{margin-top:26px;color:var(--ink-2);font-size:14px;max-width:62ch}
+.explain h2{font:600 20px "Barlow Condensed",sans-serif;color:var(--ink);margin:0 0 6px}
+.msg{padding:28px 0;color:var(--ink-2)}
+.msg.err{color:var(--down)}
+</style>
+</head>
+<body>
+<header><div class="wrap">
+  <h1 id="title">Standings</h1>
+  <p class="sub" id="subtitle">Loading league data from Sleeper…</p>
+</div></header>
+<div class="bar wrap">
+  <small id="updated"></small>
+  <button id="refresh" type="button">Refresh standings</button>
+</div>
+<main class="wrap">
+  <div id="out" class="msg">Loading…</div>
+  <section class="explain">
+    <h2>How ties are broken</h2>
+    <p>Teams are ranked by win percentage. Teams with the same record are grouped, and each team’s games against the others in that group are pooled into one head-to-head record. The higher head-to-head percentage ranks first; a team that played no one in the group counts as .000. If that’s still equal, points for decides it. The “vs Sleeper” column shows how each team moved compared with Sleeper’s points-for tiebreaker.</p>
+    <p>Data loads live from Sleeper every time this page opens, so it reflects Sleeper’s numbers as soon as the week is scored (typically Tuesday morning).</p>
+  </section>
+</main>
+<script>
+const DEFAULT_LEAGUE_ID = "1397405160325570560";
+const API = "https://api.sleeper.app/v1";
+const LEAGUE_ID = new URLSearchParams(location.search).get("league") || DEFAULT_LEAGUE_ID;
+const NO_GAMES_PCT = 0; // NFL.com treats a team with no games vs the tied group as .000
+
+const $ = id => document.getElementById(id);
+const getJSON = async path => {
+  const r = await fetch(API + path, {cache: "no-store"});
+  if (!r.ok) throw new Error(`Sleeper returned ${r.status} for ${path}`);
+  return r.json();
+};
+const pct = (w, l, t) => { const g = w + l + t; return g ? (w + t / 2) / g : null; };
+const fmtPct = p => p === null ? "—" : p.toFixed(3).replace(/^0/, "");
+const rec = (w, l, t) => t ? `${w}-${l}-${t}` : `${w}-${l}`;
+
+async function load() {
+  $("out").className = "msg"; $("out").textContent = "Loading…";
+  try {
+    const [league, rosters, users, state] = await Promise.all([
+      getJSON(`/league/${LEAGUE_ID}`), getJSON(`/league/${LEAGUE_ID}/rosters`),
+      getJSON(`/league/${LEAGUE_ID}/users`), getJSON(`/state/nfl`)
+    ]);
+    if (!league || !rosters) throw new Error("League not found. Check the league ID.");
+
+    const s = league.settings || {};
+    const lastRegWeek = (s.playoff_week_start || 15) - 1;
+    let lastWeek = Number(s.last_scored_leg) || (state.season_type === "regular" ? state.week - 1 : lastRegWeek);
+    if (String(league.season) !== String(state.season)) lastWeek = lastRegWeek;
+    lastWeek = Math.max(0, Math.min(lastWeek, lastRegWeek));
+
+    const userById = Object.fromEntries((users || []).map(u => [u.user_id, u]));
+    const teams = rosters.map(r => {
+      const u = userById[r.owner_id] || {};
+      const st = r.settings || {};
+      return {
+        id: r.roster_id,
+        name: (u.metadata && u.metadata.team_name) || u.display_name || `Team ${r.roster_id}`,
+        owner: u.display_name || "",
+        w: st.wins || 0, l: st.losses || 0, t: st.ties || 0,
+        pf: (st.fpts || 0) + (st.fpts_decimal || 0) / 100
+      };
+    });
+    teams.forEach(t => t.pct = pct(t.w, t.l, t.t) ?? 0);
+
+    // Every completed regular-season game: [rosterA, ptsA, rosterB, ptsB]
+    const weeks = await Promise.all(
+      Array.from({length: lastWeek}, (_, i) => getJSON(`/league/${LEAGUE_ID}/matchups/${i + 1}`))
+    );
+    const games = [];
+    weeks.forEach(rows => {
+      const byMatch = {};
+      (rows || []).forEach(r => { if (r.matchup_id != null) (byMatch[r.matchup_id] ||= []).push(r); });
+      Object.values(byMatch).forEach(p => { if (p.length === 2) games.push([p[0].roster_id, p[0].points || 0, p[1].roster_id, p[1].points || 0]); });
+    });
+
+    // Sleeper-style order: win %, then points for
+    const sleeperOrder = [...teams].sort((a, b) => b.pct - a.pct || b.pf - a.pf);
+    sleeperOrder.forEach((t, i) => t.sleeperRank = i + 1);
+
+    // H2H-first order
+    const groups = {};
+    teams.forEach(t => (groups[t.pct.toFixed(6)] ||= []).push(t));
+    const ordered = [];
+    Object.keys(groups).sort((a, b) => b - a).forEach(k => {
+      const g = groups[k];
+      if (g.length > 1) {
+        const ids = new Set(g.map(t => t.id));
+        g.forEach(t => { t.hw = 0; t.hl = 0; t.ht = 0; });
+        const byId = Object.fromEntries(g.map(t => [t.id, t]));
+        games.forEach(([a, pa, b, pb]) => {
+          if (!ids.has(a) || !ids.has(b)) return;
+          if (pa > pb) { byId[a].hw++; byId[b].hl++; }
+          else if (pb > pa) { byId[b].hw++; byId[a].hl++; }
+          else { byId[a].ht++; byId[b].ht++; }
+        });
+        g.forEach(t => { t.hpct = pct(t.hw, t.hl, t.ht) ?? NO_GAMES_PCT; t.tied = true; });
+        g.sort((a, b) => b.hpct - a.hpct || b.pf - a.pf);
+      }
+      ordered.push(...g);
+    });
+    ordered.forEach((t, i) => t.rank = i + 1);
+
+    render(league, ordered, lastWeek);
+  } catch (e) {
+    $("out").className = "msg err";
+    $("out").textContent = `Couldn’t load standings: ${e.message}`;
+  }
+}
+
+function render(league, teams, lastWeek) {
+  $("title").textContent = league.name || "Standings";
+  $("subtitle").textContent = lastWeek
+    ? `${league.season} season, through week ${lastWeek} – head-to-head tiebreaker`
+    : `${league.season} season – no completed weeks yet`;
+  $("updated").textContent = `Loaded ${new Date().toLocaleString([], {weekday:"short", month:"short", day:"numeric", hour:"numeric", minute:"2-digit"})}`;
+
+  const rows = teams.map(t => {
+    const diff = t.sleeperRank - t.rank;
+    const mv = diff > 0 ? `<span class="mv up">▲ ${diff}</span>` : diff < 0 ? `<span class="mv down">▼ ${-diff}</span>` : `<span class="mv same">–</span>`;
+    const note = t.tied ? `<span class="note">H2H vs tied teams: ${rec(t.hw, t.hl, t.ht)} (${fmtPct(pct(t.hw, t.hl, t.ht) ?? NO_GAMES_PCT)})</span>` : "";
+    const owner = t.owner && t.owner !== t.name ? `<span class="owner">${esc(t.owner)}</span>` : "";
+    return `<tr class="${t.tied ? "tied" : ""}"><td class="rank">${t.rank}</td>
+      <td><span class="team">${esc(t.name)}</span>${owner}${note}</td>
+      <td class="num">${rec(t.w, t.l, t.t)}</td><td class="num">${t.pf.toFixed(2)}</td><td class="num">${mv}</td></tr>`;
+  }).join("");
+  $("out").className = "";
+  $("out").innerHTML = `<div class="scroll"><table>
+    <thead><tr><th>#</th><th>Team</th><th class="num">Record</th><th class="num">Pts for</th><th class="num">vs Sleeper</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+$("refresh").addEventListener("click", load);
+load();
+</script>
+</body>
+</html>
